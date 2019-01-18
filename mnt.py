@@ -9,55 +9,50 @@ from keras.utils import np_utils
 from keras.optimizers import Adam
 import tensorflow as tf
 from keras.layers.merge import _Merge
-np.random.seed(123)
+np.random.seed(1)
 
-activityType = ["jogging", "sitting", "standing", "walking", "upstairs", "downstairs"]
-idList = range(len(activityType))
-activityIdDict = dict(zip(activityType, idList))
-data_path = 'C:\\IdeaProjects\\Datasets\\selfback\\merge\\'
-test_ids = ['007']
+classes = ["jogging", "sitting", "standing", "walkfast", "walkmod", "walkslow", "upstairs", "downstairs", "lying"]
+idList = range(len(classes))
+activityIdDict = dict(zip(classes, idList))
 
-def load_selfback_data(path):
+data_path = 'C:\\IdeaProjects\\Datasets\\selfback\\activity_data_34_9_\\'
+
+def read_data(path):
     person_data = {}
     files = os.listdir(path)
     for f in files:
-        reader = csv.reader(open(os.path.join(path,f), "r"), delimiter=",")
-        _class = f.split('_')[1]
-        p = f.split('_')[0]
-        temp_data = []
+        temp = f.split("_")
+        user = temp[0]
+        activity = temp[1]
+        data = []
+        reader = csv.reader(open(os.path.join(path, f), "r"), delimiter=",")
         for row in reader:
-            temp_data.append(row)
+            data.append(row)
+
         activity_data = {}
-        if p in person_data:
-            activity_data = person_data[p]
-            activity_data[_class] = temp_data
+        if user in person_data:
+            activity_data = person_data[user]
+            activity_data[activity] = data
         else:
-            activity_data[_class] = temp_data
-        person_data[p] = activity_data
+            activity_data[activity] = data
+        person_data[user] = activity_data
+
     return person_data
 
-def holdout_train_test_split(user_data, test_ids):
-    train_data = {key:value for key, value in user_data.items() if key not in test_ids}
-    test_data = {key:value for key, value in user_data.items() if key in test_ids}
-    return train_data, test_data
-
-def extract_features(data, win_len=500):
+def extract_features(data, dct_length, win_len=500):
+    people = {}
     for person in data:
         person_data = data[person]
+        activities = {}
         for activity in person_data:
             df = person_data[activity]
-            act = activityIdDict.get(activity)
-            ws, ts = split_windows(df, win_len, overlap_ratio=1)
-            dct_ws = dct(ws)
-            dct_ts = dct(ts)
-            labs = [act for i in range(len(ws))]
-            if act in classes:
-                classes[act][0].extend(dct_ws)
-                classes[act][1].extend(dct_ts)
-                classes[act][2].extend(labs)
-            else:
-                classes[act] = [dct_ws, dct_ts, labs]
-        people[person] = classes
+            _ws,_ts = split_windows(df, win_len, overlap_ratio=1)
+            dct_ws = dct(_ws, comps=dct_length)
+            dct_ts = dct(_ts, comps=dct_length)
+            act = activityIdDict[activity]
+            labs = [act for i in range(len(_ws))]
+            activities[act] = [dct_ws, dct_ts, labs]
+        people[person] = activities
     return people
 
 def split_windows(data, window_length, overlap_ratio=None):
@@ -95,17 +90,19 @@ def dct(windows, comps=60):
         dct_window.append(v)
     return dct_window
 
+def holdout_train_test_split(user_data, test_ids):
+    train_data = {key:value for key, value in user_data.items() if key not in test_ids}
+    test_data = {key:value for key, value in user_data.items() if key in test_ids}
+    return train_data, test_data
+
+def get_hold_out_users(users):
+    indices = np.random.choice(len(users), int(len(users)/3), False)
+    test_users = [u for indd,u in enumerate(users) if indd in indices]
+    return test_users
+
 def mlp(x):
-    x = Dense(360, activation='relu')(x)
-    x = BatchNormalization()(x)
     x = Dense(1200, activation='relu')(x)
     x = BatchNormalization()(x)
-    return x
-
-def ae(x):
-    x = Dense(96, activation='sigmoid')(x)
-    x = BatchNormalization()(x)
-    x = Dense(180, name='ae')(x)
     return x
 
 def mlp_hat(x1, x2):
@@ -116,37 +113,39 @@ def mlp_hat(x1, x2):
     x = concatenate([x1, x2])
     x = Dense(1200, activation='relu')(x)
     x = BatchNormalization()(x)
-    x = Dense(6, activation='softmax', name='mlp')(x)
+    x = Dense(len(classes), activation='softmax', name='mlp')(x)
     return x
 
-###################upper########################
-def upper(train_data, test_data):
-    upper_input = Input((180,))
+def ae(x, feature_length):
+    x = Dense(96, activation='sigmoid')(x)
+    x = BatchNormalization()(x)
+    x = Dense(feature_length, name='ae')(x)
+    return x
+
+def upper(train_data, feature_length):
+    upper_input = Input((feature_length,))
     upper_output = ae(upper_input)
     upper_model = Model(inputs=upper_input,outputs=upper_output)
     adam = Adam(lr=0.01)
     upper_model.compile(optimizer=adam,loss='mse')
     upper_model.fit(train_data[0], train_data[1], epochs=10, batch_size=64, verbose=0)
-    _test_data = upper_model.predict(test_data[0])
 
 ####################lower########################
-def lower(train_data, test_data):
-    lower_input = Input((180,))
+def lower(train_data, feature_length):
+    lower_input = Input((feature_length,))
     lower_output = mlp(lower_input)
     lower_model = Model(inputs=lower_input,outputs=lower_output)
     adam = Adam(lr=0.01)
     lower_model.compile(optimizer=adam,loss='categorical_crossentropy')
     lower_model.fit(train_data[0], train_data[2], epochs=10, batch_size=64, verbose=0)
-    score = lower_model.evaluate(test_data[0], test_data[2], verbose=0)
-    print(score)
 
 ##################combine######################
-def combine(train_data, test_data):
-    upper_input = Input((180,))
+def combine(train_data, test_data, feature_length):
+    upper_input = Input((feature_length,))
     upper_output = ae(upper_input)
     upper_model = Model(inputs=upper_input,outputs=upper_output)
 
-    lower_input = Input((180,))
+    lower_input = Input((feature_length,))
     lower_output = mlp_hat(lower_input, upper_output)
 
     adam = Adam(lr=0.01)
@@ -156,20 +155,18 @@ def combine(train_data, test_data):
 
     train_y = train_data[2]
     test_y = test_data[2]
-    _train_y = np_utils.to_categorical(train_y, len(activityType))
-    _test_y = np_utils.to_categorical(test_y, len(activityType))
+    _train_y = np_utils.to_categorical(train_y, len(classes))
+    _test_y = np_utils.to_categorical(test_y, len(classes))
 
     combine_model.fit([train_data[0], train_data[0]], [train_data[1], _train_y], epochs=10, batch_size=64, verbose=1)
     score = combine_model.evaluate([test_data[0], test_data[0]], [test_data[1], _test_y], verbose=1)
     print(score)
 
 ###############################################################
-user_data = load_selfback_data(data_path)
-user_ids = list(user_data.keys())
-for user_id in user_ids:
-    print(user_id)
-    _train_data, _test_data = holdout_train_test_split(user_data, [user_id])
-    _lower_train_data = extract_features(_train_data)
-    _lower_test_data = extract_features(_test_data)
-    combine(_lower_train_data, _lower_test_data)
+user_data = read_data(data_path)
+test_user_ids = get_hold_out_users(list(user_data.keys()))
+_train_data, _test_data = holdout_train_test_split(user_data, test_user_ids)
+_lower_train_data = extract_features(_train_data)
+_lower_test_data = extract_features(_test_data)
+combine(_lower_train_data, _lower_test_data)
 
