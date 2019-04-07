@@ -5,73 +5,64 @@ from keras.layers.normalization import BatchNormalization
 from keras.models import Model
 from scipy import fftpack
 from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
 import keras
 import os
 import csv
 import tensorflow as tf
 from keras.layers.merge import _Merge
-
-imus = [2]
+np.random.seed(1)
+imus = [1]
 
 classes = ["jogging", "sitting", "standing", "walkfast", "walkmod", "walkslow", "upstairs", "downstairs", "lying"]
 idList = range(len(classes))
 activityIdDict = dict(zip(classes, idList))
 
+test_user_folds = [['026', '027', '028', '029'],
+                   ['030', '031', '033', '034'],
+                   ['036', '039', '040', '041'],
+                   ['042', '043', '044', '046'],
+                   ['047', '048', '049', '050'],
+                   ['051', '052', '053', '054'],
+                   ['055', '056', '057', '058'],
+                   ['059', '060', '061', '062']]
+
+# svm
+# 0.6814079422382672
+# 0.6949602122015915
+# 0.6934900542495479
+# 0.7269439421338155
+# 0.6681859617137648
+# 0.8117539026629935
+# 0.7534372135655362
+# 0.7943840579710145
+# 0.7280704108420664
+
+# 5nn
+# 0.6209386281588448
+# 0.6259946949602122
+# 0.6482820976491862
+# 0.620253164556962
+# 0.6371923427529627
+# 0.6841138659320477
+# 0.6379468377635197
+# 0.6277173913043478
+# 0.6378048778847604
+
 def write_data(file_path, data):
-    if(os.path.isfile(file_path)):
+    if os.path.isfile(file_path):
         f = open(file_path, 'a')
-        f.write(data+'\n')
+        f.write(data + '\n')
     else:
         f = open(file_path, 'w')
-        f.write(data+'\n')
+        f.write(data + '\n')
     f.close()
 
-class MatchCosine(_Merge):
-    def __init__(self,nway=5, n_samp=1, **kwargs):
-        super(MatchCosine,self).__init__(**kwargs)
-        self.eps = 1e-10
-        self.nway = nway
-        self.n_samp = n_samp
-
-    def build(self, input_shape):
-        print('here')
-
-    def call(self,inputs):
-        self.nway = (len(inputs)-2)/self.n_samp
-        similarities = []
-
-        targetembedding = inputs[-2]
-        numsupportset = len(inputs)-2
-        for ii in range(numsupportset):
-            supportembedding = inputs[ii]
-
-            sum_support = tf.reduce_sum(tf.square(supportembedding), 1, keep_dims=True)
-            supportmagnitude = tf.rsqrt(tf.clip_by_value(sum_support, self.eps, float("inf")))
-
-            sum_query = tf.reduce_sum(tf.square(targetembedding), 1, keep_dims=True)
-            querymagnitude = tf.rsqrt(tf.clip_by_value(sum_query, self.eps, float("inf")))
-
-            dot_product = tf.matmul(tf.expand_dims(targetembedding,1),tf.expand_dims(supportembedding,2))
-            dot_product = tf.squeeze(dot_product,[1])
-
-            cosine_similarity = dot_product*supportmagnitude*querymagnitude
-            similarities.append(cosine_similarity)
-
-        similarities = tf.concat(axis=1,values=similarities)
-        softmax_similarities = tf.nn.softmax(similarities)
-        preds = tf.squeeze(tf.matmul(tf.expand_dims(softmax_similarities,1),inputs[-1]))
-
-        preds.set_shape((inputs[0].shape[0],self.nway ))
-        return preds
-
-    def compute_output_shape(self,input_shape):
-        input_shapes = input_shape
-        return (input_shapes[0][0],self.nway )
 
 def read_data(path):
     person_data = {}
     files = os.listdir(path)
-    for f in files:
+    for f in [ff for ff in files if '.DS_Store' not in ff]:
         temp = f.split("_")
         user = temp[0]
         activity = temp[1]
@@ -90,6 +81,7 @@ def read_data(path):
 
     return person_data
 
+
 def extract_features(data, dct_length, win_len=500):
     people = {}
     for person in data:
@@ -97,47 +89,51 @@ def extract_features(data, dct_length, win_len=500):
         activities = {}
         for activity in person_data:
             df = person_data[activity]
-            _ws,_ts = split_windows(df, win_len, overlap_ratio=1)
-            dct_ts = dct(_ts, comps=dct_length)
+            _wts = split_windows(df, win_len, overlap_ratio=1)
+            dct_ts = dct(_wts, comps=dct_length)
             act = activityIdDict[activity]
             activities[act] = dct_ts
         people[person] = activities
     return people
 
+
 def split_windows(data, window_length, overlap_ratio=None):
-    w = []
-    t = []
+    wt = []
     i = 0
     N = len(data)
     increment = int(window_length * overlap_ratio)
     while i + window_length < N:
         start = i
         end = start + window_length
-        _w = [a[:3] for a in data[start:end]]
-        _t = [a[3:] for a in data[start:end]]
+        _wt = [a[:] for a in data[start:end]]
         i = int(i + (increment))
-        w.append(_w)
-        t.append(_t)
-    return w, t
+        wt.append(_wt)
+    return wt
+
 
 def dct(windows, comps=60):
     dct_window = []
     for tw in windows:
-        x = [t[0] for t in tw]
-        y = [t[1] for t in tw]
-        z = [t[2] for t in tw]
+        all_acc_dcts = np.array([])
+        for index in imus:
+            _index = index - 1
+            x = [t[(_index*3)+0] for t in tw]
+            y = [t[(_index*3)+1] for t in tw]
+            z = [t[(_index*3)+2] for t in tw]
 
-        dct_x = np.abs(fftpack.dct(x, norm='ortho'))
-        dct_y = np.abs(fftpack.dct(y, norm='ortho'))
-        dct_z = np.abs(fftpack.dct(z, norm='ortho'))
+            dct_x = np.abs(fftpack.dct(x, norm='ortho'))
+            dct_y = np.abs(fftpack.dct(y, norm='ortho'))
+            dct_z = np.abs(fftpack.dct(z, norm='ortho'))
 
-        v = np.array([])
-        v = np.concatenate((v, dct_x[:comps]))
-        v = np.concatenate((v, dct_y[:comps]))
-        v = np.concatenate((v, dct_z[:comps]))
+            v = np.array([])
+            v = np.concatenate((v, dct_x[:comps]))
+            v = np.concatenate((v, dct_y[:comps]))
+            v = np.concatenate((v, dct_z[:comps]))
+            all_acc_dcts = np.concatenate((all_acc_dcts, v))
 
-        dct_window.append(v)
+        dct_window.append(all_acc_dcts)
     return dct_window
+
 
 def support_set_split(_data, k_shot):
     support_set = {}
@@ -154,6 +150,7 @@ def support_set_split(_data, k_shot):
         support_set[user] = _support_set
         everything_else[user] = _everything_else
     return support_set, everything_else
+
 
 def packslice(data_set, classes_per_set, samples_per_class, train_size, feature_length):
     n_samples = samples_per_class * classes_per_set
@@ -191,10 +188,14 @@ def packslice(data_set, classes_per_set, samples_per_class, train_size, feature_
 
     return np.array(support_cacheX), np.array(support_cacheY), np.array(target_cacheY)
 
+
 def create_train_instances(train_sets, classes_per_set, samples_per_class, train_size, feature_length):
-    support_X = None; support_y = None; target_y = None
+    support_X = None;
+    support_y = None;
+    target_y = None
     for user_id, train_feats in train_sets.items():
-        _support_X, _support_y, _target_y = packslice(train_feats, classes_per_set, samples_per_class, train_size, feature_length)
+        _support_X, _support_y, _target_y = packslice(train_feats, classes_per_set, samples_per_class, train_size,
+                                                      feature_length)
 
         if support_X is not None:
             support_X = np.concatenate((support_X, _support_X))
@@ -210,6 +211,8 @@ def create_train_instances(train_sets, classes_per_set, samples_per_class, train
     print(support_y.shape)
     print(target_y.shape)
     return [support_X, support_y, target_y]
+
+
 #
 def packslice_test(data_set, support_set, classes_per_set, samples_per_class, feature_length):
     n_samples = samples_per_class * classes_per_set
@@ -222,8 +225,8 @@ def packslice_test(data_set, support_set, classes_per_set, samples_per_class, fe
     for i, _class in enumerate(support_set.keys()):
         X = support_set[_class]
         for j in range(len(X)):
-            support_X[(i*samples_per_class)+j, :] = X[j]
-            support_y[(i*samples_per_class)+j] = _class
+            support_X[(i * samples_per_class) + j, :] = X[j]
+            support_y[(i * samples_per_class) + j] = _class
 
     for _class in data_set:
         X = data_set[_class]
@@ -244,12 +247,16 @@ def packslice_test(data_set, support_set, classes_per_set, samples_per_class, fe
 
     return np.array(support_cacheX), np.array(support_cacheY), np.array(target_cacheY)
 
+
 def create_test_instance(test_set, support_set, classes_per_set, samples_per_class, feature_length):
-    support_X = None; support_y = None; target_y = None
+    support_X = None;
+    support_y = None;
+    target_y = None
 
     for user_id, test_data in test_set.items():
         support_data = support_set[user_id]
-        _support_X, _support_y, _target_y = packslice_test(test_data, support_data, classes_per_set, samples_per_class, feature_length)
+        _support_X, _support_y, _target_y = packslice_test(test_data, support_data, classes_per_set, samples_per_class,
+                                                           feature_length)
 
         if support_X is not None:
             support_X = np.concatenate((support_X, _support_X))
@@ -266,25 +273,30 @@ def create_test_instance(test_set, support_set, classes_per_set, samples_per_cla
     print(target_y.shape)
     return [support_X, support_y, target_y]
 
+
 def mlp_embedding(x):
     x = Dense(1200, activation='relu')(x)
     x = BatchNormalization()(x)
     return x
 
+
 def user_holdout_split(user_data, test_ids):
-    train_data = {key:value for key, value in user_data.items() if key not in test_ids}
-    test_data = {key:value for key, value in user_data.items() if key in test_ids}
+    train_data = {key: value for key, value in user_data.items() if key not in test_ids}
+    test_data = {key: value for key, value in user_data.items() if key in test_ids}
     return train_data, test_data
 
+
 def get_hold_out_users(users):
-    indices = np.random.choice(len(users), int(len(users)/3), False)
-    test_users = [u for indd,u in enumerate(users) if indd in indices]
+    indices = np.random.choice(len(users), int(len(users) / 5), False)
+    test_users = [u for indd, u in enumerate(users) if indd in indices]
     return test_users
+
 
 def get_test_classes(all_clsses, test_lngth):
     indices = np.random.choice(len(all_clsses), test_lngth, False)
-    test_clss = [u for indd,u in enumerate(all_clsses) if indd in indices]
+    test_clss = [u for indd, u in enumerate(all_clsses) if indd in indices]
     return test_clss
+
 
 def flatten(_data):
     data = []
@@ -295,31 +307,31 @@ def flatten(_data):
             activity = activities[act]
             data.extend(activity)
             lbls.extend([act for i in range(len(activity))])
-    return data,lbls
+    return data, lbls
 
-bsize = 128
-samples_per_class = 5
-train_size = 500
-epochs =10
+
 dct_length = 60
 feature_length = dct_length * 3 * len(imus)
 classes_per_set = len(classes)
-data_path = 'C:\\IdeaProjects\\Datasets\\selfback\\activity_data_34_9\\'
+data_path = '/Users/anjanawijekoon/Data/SELFBACK/activity_data_34/merge/'
 
 user_data = read_data(data_path)
 feature_data = extract_features(user_data, dct_length)
 user_data = {}
-
-for i in range(5):
-    np.random.seed(i)
-    test_user_ids = get_hold_out_users(list(feature_data.keys()))
-    print(test_user_ids)
+_sum = 0.0
+for i in range(8):
+    test_user_ids = test_user_folds[i]
 
     _train_features, _test_features = user_holdout_split(feature_data, test_user_ids)
     _train_features, _train_labels = flatten(_train_features)
     _test_features, _test_labels = flatten(_test_features)
 
-    svc = SVC()
-    svc.fit(_train_features, _train_labels)
-    score = svc.score(_test_features, _test_labels)
+    # svc = SVC()
+    # svc.fit(_train_features, _train_labels)
+    # score = svc.score(_test_features, _test_labels)
+    knn = KNeighborsClassifier(n_neighbors=3)
+    knn.fit(_train_features, _train_labels)
+    score = knn.score(_test_features, _test_labels)
+    _sum = _sum + score
     print(score)
+print(_sum/8)
