@@ -1,8 +1,8 @@
 import numpy as np
 from keras import backend as K
-from keras.layers import Input, Lambda, Dense
+from keras.layers import Input, Lambda, Dense, Activation
 from keras.layers.normalization import BatchNormalization
-from keras.models import Model
+from keras.models import Model, Sequential
 from scipy import fftpack
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
@@ -273,10 +273,20 @@ def create_test_instance(test_set, support_set, classes_per_set, samples_per_cla
     return [support_X, support_y, target_y]
 
 
-def mlp_embedding(x):
-    x = Dense(1200, activation='relu')(x)
-    x = BatchNormalization()(x)
-    return x
+def mlp(train_features, train_labels, test_features, test_labels):
+    _train_labels = keras.utils.to_categorical(train_labels, len(classes))
+    _test_labels = keras.utils.to_categorical(test_labels, len(classes))
+    _input = Input((feature_length))
+    model = Sequential()
+    model.add(Dense(32, input_dim=784, activation='relu'))
+    model.add(Dense(feature_length/2, activation='relu'))
+    model.add(BatchNormalization())
+    model.add(Dense(len(classes), activation='softmax'))
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    model.fit(_train_features, _train_labels, epochs=10, batch_size=32, verbose=0)
+    score = model.evaluate(_test_features, _test_labels, batch_size=32, verbose=0)
+
+    return score
 
 
 def user_holdout_split(user_data, test_ids):
@@ -311,7 +321,6 @@ def flatten(_data):
 
 dct_length = 60
 feature_length = dct_length * 3 * len(imus)
-classes_per_set = len(classes)
 data_path = '/Users/anjanawijekoon/Data/SELFBACK/activity_data_34/merge/'
 
 user_data = read_data(data_path)
@@ -328,9 +337,10 @@ for i in range(8):
     # svc = SVC()
     # svc.fit(_train_features, _train_labels)
     # score = svc.score(_test_features, _test_labels)
-    knn = KNeighborsClassifier(n_neighbors=3)
-    knn.fit(_train_features, _train_labels)
-    score = knn.score(_test_features, _test_labels)
-    _sum = _sum + score
+    # knn = KNeighborsClassifier(n_neighbors=3)
+    # knn.fit(_train_features, _train_labels)
+    # score = knn.score(_test_features, _test_labels)
+    score = mlp(_train_features, _train_labels, _test_features, _test_labels)
+    _sum = _sum + score[1]
     print(score)
 print(_sum/8)
